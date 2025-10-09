@@ -1,0 +1,10 @@
+feat(scope): résumé bref
+
+Contexte:
+- pourquoi ce changement
+
+Détails:
+- ce qui a été fait
+
+Tests:
+- ce qui a été vérifié
