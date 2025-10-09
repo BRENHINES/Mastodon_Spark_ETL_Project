@@ -1,0 +1,29 @@
+# Python / venv
+venv/
+__pycache__/
+*.pyc
+
+# Secrets / env
+config/.env
+*.env
+
+# Spark / models
+spark-checkpoints/
+models/
+mlruns/
+
+# Notebooks
+.ipynb_checkpoints/
+*.ipynb_history
+
+# Docker artefacts
+*.log
+**/.DS_Store
+
+# Grafana/Prometheus data (si bind volume local)
+grafana-data/
+prometheus-data/
+
+# IDE
+.idea/
+.vscode/

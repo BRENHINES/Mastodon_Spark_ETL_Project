@@ -1,0 +1,4 @@
+FROM grafana/grafana:10.2.3
+USER root
+COPY datasources.yml /etc/grafana/provisioning/datasources/datasources.yml
+COPY dashboards /etc/grafana/provisioning/dashboards
