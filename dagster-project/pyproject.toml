@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "mastodon-pipeline"
+version = "0.0.1"
+
+[tool.dagster]
+module_name = "dagster_project"   # correspond au paquet python (dossier dagster-project) renommé en dagster_project
+code_location_name = "dagster"

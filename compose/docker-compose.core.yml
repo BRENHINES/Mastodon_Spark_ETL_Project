@@ -1,0 +1,174 @@
+name: spark-mastodon-core
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    platform: linux/arm64/v8
+    environment:
+      ZOOKEEPER_CLIENT_PORT: "2181"
+      ZOOKEEPER_TICK_TIME: "2000"
+      JMX_PORT: "9998"
+      KAFKA_OPTS: >-
+        -javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9405:/jmx/zookeeper.yml
+    ports: [ "2181:2181" ]
+    networks: [ data_net ]
+    volumes:
+      - ../docker/monitoring/jmx:/jmx:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok >/dev/null 2>&1 || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    platform: linux/arm64/v8
+    depends_on:
+      zookeeper:
+        condition: service_started
+    environment:
+      KAFKA_BROKER_ID: "1"
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_LOG_RETENTION_HOURS: "${KAFKA_RETENTION_HOURS:-24}"
+      JMX_PORT: "9999"
+      KAFKA_OPTS: >-
+        -javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9404:/jmx/kafka.yml
+    ports: [ "9092:9092" ]
+    networks: [ data_net ]
+    volumes:
+      - ../docker/monitoring/jmx:/jmx:ro
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks: [data_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  spark-master:
+    build:
+      context: ../docker/spark
+      dockerfile: Dockerfile
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_HOST=spark-master
+      - HOME=/tmp
+      - USER=spark
+      - HADOOP_USER_NAME=spark
+      - SPARK_USER=spark
+      - SPARK_DAEMON_JAVA_OPTS=-javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9406:/jmx/spark.yml
+      - SENTIMENT140_CSV=/data/sentiment140.csv
+      - MODEL_DIR=/models
+    ports: ["7077:7077", "8080:8080", "6066:6066"]
+    volumes:
+      - ..:/opt/project
+      - spark-checkpoints:${SPARK_CHECKPOINT_DIR}
+      - ../models:${MODEL_DIR}
+      - ../docker/monitoring/jmx:/jmx:ro
+      - ../data:/data:ro
+    networks: [data_net]
+
+  spark-worker:
+    build:
+      context: ../docker/spark
+      dockerfile: Dockerfile
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=${SPARK_MASTER}
+      - HOME=/tmp
+      - USER=spark
+      - HADOOP_USER_NAME=spark
+      - SPARK_USER=spark
+      - SPARK_DAEMON_JAVA_OPTS=-javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9406:/jmx/spark.yml
+    ports: ["8081:8081"]
+    volumes:
+      - ..:/opt/project
+      - spark-checkpoints:${SPARK_CHECKPOINT_DIR}
+      - models:${MODEL_DIR}
+      - ../docker/monitoring/jmx:/jmx:ro
+    networks: [data_net]
+
+  # Service long-running : Structured Streaming (Kafka -> Spark -> Postgres)
+  streaming:
+    build:
+      context: ../docker/spark
+      dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+    environment:
+      - KAFKA_BROKER=${KAFKA_BROKER:-kafka:9092}
+      - KAFKA_TOPIC=${KAFKA_TOPIC:-mastodon_stream}
+      - MASTODON_INSTANCE=${MASTODON_INSTANCE:-mastodon.social}
+      - MASTODON_ACCESS_TOKEN=${MASTODON_ACCESS_TOKEN}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - POSTGRES_URL=jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      - POSTGRES_TABLE=${POSTGRES_TABLE:-toots}
+      - HOME=/opt/ivy
+      - USER=spark
+      - HADOOP_USER_NAME=spark
+      - SPARK_USER=spark
+      - SPARK_IVY=/opt/ivy
+    command: >
+      /opt/bitnami/spark/bin/spark-submit
+      --master ${SPARK_MASTER:-spark://spark-master:7077}
+      --conf spark.jars.ivy=${SPARK_IVY}
+      --conf spark.driver.extraJavaOptions="-Duser.name=spark -Duser.home=${SPARK_IVY}"
+      --conf spark.executor.extraJavaOptions="-Duser.name=spark -Duser.home=${SPARK_IVY}"
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
+      --jars /opt/spark/jars/postgresql-42.7.4.jar
+      /opt/project/spark/streaming_to_postgres.py
+    volumes:
+      - ..:/opt/project
+      - spark-checkpoints:${SPARK_CHECKPOINT_DIR}
+      - models:${MODEL_DIR}
+      - ivy-cache:/opt/ivy
+    networks: [data_net]
+    restart: "no"
+
+  # Conteneur de dev pour PyCharm (interpréteur Docker)
+  dev:
+    image: python:3.11-slim
+    working_dir: /opt/project
+    command: sleep infinity
+    volumes:
+      - ..:/opt/project
+    networks: [data_net]
+
+networks:
+  data_net:
+    name: data_net
+
+volumes:
+  pgdata:
+  spark-checkpoints:
+  models:
+  ivy-cache:

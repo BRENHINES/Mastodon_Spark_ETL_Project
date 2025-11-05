@@ -1,0 +1,23 @@
+startDelaySeconds: 0
+ssl: false
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+whitelistObjectNames:
+  - "kafka.server:type=BrokerTopicMetrics,name=*"
+  - "kafka.controller:type=KafkaController,name=*"
+  - "kafka.network:type=RequestMetrics,name=*"
+  - "kafka.log:type=LogFlushStats,name=*"
+  - "kafka.server:type=ReplicaManager,name=*"
+  - "kafka.server:type=SessionExpireListener,name=*"
+rules:
+  - pattern: "kafka.server<type=BrokerTopicMetrics, name=(.+)PerSec, topic=(.+)><>Count"
+    name: kafka_broker_topic_$1_total
+    labels:
+      topic: "$2"
+    type: COUNTER
+  - pattern: "kafka.server<type=BrokerTopicMetrics, name=(BytesInPerSec|BytesOutPerSec)><>Count"
+    name: kafka_broker_$1_total
+    type: COUNTER
+  - pattern: "kafka.controller<type=KafkaController, name=(.+)><>Value"
+    name: kafka_controller_$1
+    type: GAUGE

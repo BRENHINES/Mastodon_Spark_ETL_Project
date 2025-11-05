@@ -1,15 +1,28 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 30s
 
 scrape_configs:
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['prometheus:9090']
-
-  - job_name: 'node'
-    static_configs:
-      - targets: ['node-exporter:9100']
-
   - job_name: 'kafka'
     static_configs:
-      - targets: ['kafka-exporter:9308']
+      - targets: ['kafka:9404']     # port JMX exporter du broker
+
+  - job_name: 'zookeeper'
+    static_configs:
+      - targets: ['zookeeper:9405'] # port JMX exporter de ZK
+
+  - job_name: 'spark-master'
+    static_configs:
+      - targets: ['spark-master:9406']
+
+  - job_name: 'spark-worker'
+    static_configs:
+      - targets: ['spark-worker:9407']
+
+  - job_name: 'postgres-exporter'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']

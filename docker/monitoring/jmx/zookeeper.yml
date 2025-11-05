@@ -1,0 +1,13 @@
+startDelaySeconds: 0
+ssl: false
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+whitelistObjectNames:
+  - "org.apache.ZooKeeperService:name0=*,name1=*,name2=*,name3=*,*"
+rules:
+  - pattern: "org.apache.ZooKeeperService<name0=ReplicatedServer_id(.+), name1=replica.(.+), name2=Leader, name3=InMemoryDataTree><>(.+): (\\d+)"
+    name: zookeeper_$3
+    labels:
+      server_id: "$1"
+      replica: "$2"
+    type: GAUGE
