@@ -1,13 +1,13 @@
 import os
 from dagster import Definitions, define_asset_job, AssetSelection
-from assets import raw_toots, analytics_tables, sentiment_model, toots_with_sentiment
+from assets import raw_toots, analytics_tables, sentiment_model, toots_with_sentiment, sentiment_visualizations
 
 from jobs import ingest_then_batch, job_ml_sentiment
 from schedules import daily_02h
 from ressources import SparkSubmitResource, PgEnvResource
 from sensors import trigger_ml_after_ingestion
 
-all_assets = [raw_toots, analytics_tables, sentiment_model, toots_with_sentiment]
+all_assets = [raw_toots, analytics_tables, sentiment_model, toots_with_sentiment, sentiment_visualizations]
 
 # JOBS
 ingest_and_batch_job = define_asset_job(

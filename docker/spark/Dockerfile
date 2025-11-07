@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir \
     "scipy>=1.7,<1.12" \
     "pandas>=1.3,<2.0" \
     "scikit-learn>=1.0,<1.3" \
+    "matplotlib" \
     psycopg2-binary
 
 ENV SPARK_IVY=/opt/ivy

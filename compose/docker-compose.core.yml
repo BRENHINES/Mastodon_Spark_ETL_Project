@@ -8,8 +8,6 @@ services:
       ZOOKEEPER_CLIENT_PORT: "2181"
       ZOOKEEPER_TICK_TIME: "2000"
       JMX_PORT: "9998"
-      KAFKA_OPTS: >-
-        -javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9405:/jmx/zookeeper.yml
     ports: [ "2181:2181" ]
     networks: [ data_net ]
     volumes:
@@ -34,8 +32,6 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
       KAFKA_LOG_RETENTION_HOURS: "${KAFKA_RETENTION_HOURS:-24}"
       JMX_PORT: "9999"
-      KAFKA_OPTS: >-
-        -javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9404:/jmx/kafka.yml
     ports: [ "9092:9092" ]
     networks: [ data_net ]
     volumes:
@@ -67,6 +63,7 @@ services:
     build:
       context: ../docker/spark
       dockerfile: Dockerfile
+    user: root
     environment:
       - SPARK_MODE=master
       - SPARK_MASTER_HOST=spark-master
@@ -74,14 +71,13 @@ services:
       - USER=spark
       - HADOOP_USER_NAME=spark
       - SPARK_USER=spark
-      - SPARK_DAEMON_JAVA_OPTS=-javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9406:/jmx/spark.yml
       - SENTIMENT140_CSV=/data/sentiment140.csv
       - MODEL_DIR=/models
     ports: ["7077:7077", "8080:8080", "6066:6066"]
     volumes:
       - ..:/opt/project
       - spark-checkpoints:${SPARK_CHECKPOINT_DIR}
-      - ../models:${MODEL_DIR}
+      - ../models:/opt/project/models:rw
       - ../docker/monitoring/jmx:/jmx:ro
       - ../data:/data:ro
     networks: [data_net]
@@ -90,6 +86,7 @@ services:
     build:
       context: ../docker/spark
       dockerfile: Dockerfile
+    user: root
     depends_on:
       - spark-master
     environment:
@@ -99,14 +96,67 @@ services:
       - USER=spark
       - HADOOP_USER_NAME=spark
       - SPARK_USER=spark
-      - SPARK_DAEMON_JAVA_OPTS=-javaagent:/jmx/jmx_prometheus_javaagent-0.20.0.jar=9406:/jmx/spark.yml
     ports: ["8081:8081"]
     volumes:
       - ..:/opt/project
       - spark-checkpoints:${SPARK_CHECKPOINT_DIR}
-      - models:${MODEL_DIR}
+      - models:/opt/project/models:rw
       - ../docker/monitoring/jmx:/jmx:ro
     networks: [data_net]
+
+  dagster-webserver:
+    image: python:3.10-slim
+    container_name: dagster-project-webserver
+    working_dir: /opt/project
+    command: bash -lc "
+      apt-get update && apt-get install -y docker.io curl &&
+      pip install --no-cache-dir -r dagster-project/requirements.txt &&
+      pip install --no-cache-dir psycopg2-binary sqlalchemy findspark &&
+      dagster-webserver -h 0.0.0.0 -p 3001 -w dagster-project/workspace.yaml "
+    env_file:
+      - ../config/.env
+    environment:
+      DAGSTER_HOME: /opt/dagster-project
+      SPARK_SUBMIT_BIN: /opt/bitnami/spark/bin/spark-submit
+      SPARK_MASTER_URL: spark://spark-master:7077
+    volumes:
+      - ../:/opt/project:rw
+      - dagster_home:/opt/dagster-project
+      - ../dagster-project/dagster.yaml:/opt/dagster-project/dagster.yaml:ro
+      - spark_dist:/opt/bitnami/spark
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "3001:3001"
+    networks:
+      - data_net
+    depends_on:
+      - spark-master
+      - postgres
+
+  dagster-daemon:
+    image: python:3.10-slim
+    container_name: dagster-project-daemon
+    working_dir: /opt/project
+    command: bash -lc "
+      apt-get update && apt-get install -y docker.io curl &&
+      pip install --no-cache-dir -r dagster-project/requirements.txt &&
+      pip install --no-cache-dir psycopg2-binary &&
+      pip install --no-cache-dir sqlalchemy &&
+      dagster-daemon run -w dagster-project/workspace.yaml "
+    env_file:
+      - ../config/.env
+    environment:
+      DAGSTER_HOME: /opt/dagster-project
+    volumes:
+      - ../:/opt/project:rw
+      - dagster_home:/opt/dagster-project
+      - ../dagster-project/dagster.yaml:/opt/dagster-project/dagster.yaml:ro
+      - spark_dist:/opt/bitnami/spark
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - dagster-webserver
+    networks:
+      - data_net
 
   # Service long-running : Structured Streaming (Kafka -> Spark -> Postgres)
   streaming:
@@ -154,15 +204,6 @@ services:
     networks: [data_net]
     restart: "no"
 
-  # Conteneur de dev pour PyCharm (interpréteur Docker)
-  dev:
-    image: python:3.11-slim
-    working_dir: /opt/project
-    command: sleep infinity
-    volumes:
-      - ..:/opt/project
-    networks: [data_net]
-
 networks:
   data_net:
     name: data_net
@@ -172,3 +213,5 @@ volumes:
   spark-checkpoints:
   models:
   ivy-cache:
+  dagster_home:
+  spark_dist:

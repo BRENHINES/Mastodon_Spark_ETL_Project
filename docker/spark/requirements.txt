@@ -90,3 +90,6 @@ watchfiles==1.1.0
 webencodings==0.5.1
 websockets==15.0.1
 yarl==1.22.0
+matplotlib
+pandas
+psycopg2-binary

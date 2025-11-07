@@ -3,11 +3,18 @@ import os
 import subprocess
 from dagster import (
     asset, AssetExecutionContext, MetadataValue,
-    AssetIn, AssetOut,
+    AssetIn, AssetOut, MaterializeResult
 )
+import pandas as pd
+import matplotlib.pyplot as plt
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 PROJECT_ROOT = "/opt/project"
 SPARK_CONTAINER = os.getenv("SPARK_CONTAINER", "spark-mastodon-core-spark-master-1")
+
+REPORT_DIR = os.getenv("REPORT_DIR", "/reports")
+TABLE      = os.getenv("SENTIMENT_TABLE", "toots_with_sentiment")
 
 # Helpers communs
 def _copy_env(extra: dict | None = None) -> dict:
@@ -248,3 +255,131 @@ def toots_with_sentiment(context: AssetExecutionContext, model):
         "output_table": "toots_with_sentiment",
         "stdout": MetadataValue.text(result.stdout[-8000:] if result.stdout else ""),
     })
+    
+def _conn():
+    return psycopg2.connect(
+        host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASS
+    )
+
+def _ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+def _savefig(fig, path: str):
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+@asset(
+    name="sentiment_visualizations",
+    description="Génère des visualisations à partir de toots_with_sentiment et sauvegarde des PNG.",
+    ins={"visuals": AssetIn("toots_with_sentiment")},
+)
+def sentiment_visualizations(context: AssetExecutionContext, visuals) -> MaterializeResult:
+    _ensure_dir(REPORT_DIR)
+
+    with _conn() as conn:
+        # 1) Série quotidienne
+        q_daily = f"""
+        SELECT date_trunc('day', ts) AS day,
+               COUNT(*)::int AS n,
+               AVG(CASE WHEN sentiment_label='positive' THEN 1 ELSE 0 END)::float AS pos_rate,
+               AVG(sentiment_score)::float AS avg_score
+        FROM {TABLE}
+        WHERE ts IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1;
+        """
+        df_daily = pd.read_sql(q_daily, conn)
+
+        # 2) Histogramme des scores
+        q_scores = f"SELECT sentiment_score FROM {TABLE};"
+        df_scores = pd.read_sql(q_scores, conn)
+
+        # 3) Langues (top 10)
+        q_lang = f"""
+        SELECT COALESCE(NULLIF(lang,''),'und') AS lang, COUNT(*)::int AS n
+        FROM {TABLE}
+        GROUP BY 1
+        ORDER BY n DESC
+        LIMIT 10;
+        """
+        df_lang = pd.read_sql(q_lang, conn)
+
+        # 4) Top users (seuil de support)
+        q_users = f"""
+        SELECT username,
+               COUNT(*)::int AS n,
+               AVG(CASE WHEN sentiment_label='positive' THEN 1 ELSE 0 END)::float AS pos_rate
+        FROM {TABLE}
+        WHERE username IS NOT NULL AND username <> ''
+        GROUP BY username
+        HAVING COUNT(*) >= 20
+        ORDER BY pos_rate DESC, n DESC
+        LIMIT 20;
+        """
+        df_users = pd.read_sql(q_users, conn)
+
+    saved = {}
+
+    # --- Plot 1: Série quotidienne ---
+    if not df_daily.empty:
+        fig, ax1 = plt.subplots(figsize=(10, 5))
+        ax1.bar(df_daily["day"], df_daily["n"])
+        ax1.set_title("Toots / jour")
+        ax1.set_xlabel("Jour")
+        ax1.set_ylabel("Volume")
+
+        # deuxième axe pour le taux de positifs (0..1)
+        ax2 = ax1.twinx()
+        ax2.plot(df_daily["day"], df_daily["pos_rate"], marker="o")
+        ax2.set_ylabel("Taux positifs")
+
+        p = os.path.join(REPORT_DIR, "sentiment_daily.png")
+        _savefig(fig, p)
+        saved["sentiment_daily"] = MetadataValue.path(p)
+
+    # --- Plot 2: Histogramme des scores ---
+    if not df_scores.empty:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(df_scores["sentiment_score"].clip(0,1), bins=30)
+        ax.set_title("Distribution des scores de sentiment")
+        ax.set_xlabel("score positif (0..1)")
+        ax.set_ylabel("fréquence")
+
+        p = os.path.join(REPORT_DIR, "sentiment_score_hist.png")
+        _savefig(fig, p)
+        saved["sentiment_score_hist"] = MetadataValue.path(p)
+
+    # --- Plot 3: Langues (top 10) ---
+    if not df_lang.empty:
+        fig, ax = plt.subplots(figsize=(9, 5))
+        ax.bar(df_lang["lang"], df_lang["n"])
+        ax.set_title("Top 10 langues")
+        ax.set_xlabel("lang")
+        ax.set_ylabel("toots")
+        ax.tick_params(axis='x', rotation=45)
+
+        p = os.path.join(REPORT_DIR, "lang_top10.png")
+        _savefig(fig, p)
+        saved["lang_top10"] = MetadataValue.path(p)
+
+    # --- Plot 4: Top users (≥20 toots) par taux positif ---
+    if not df_users.empty:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        dfu = df_users.sort_values(["pos_rate", "n"], ascending=[True, True])
+        ax.barh(dfu["username"], dfu["pos_rate"])
+        ax.set_title("Top users par taux de positifs (≥20 toots)")
+        ax.set_xlabel("taux positifs")
+        ax.set_ylabel("username")
+
+        p = os.path.join(REPORT_DIR, "top_users.png")
+        _savefig(fig, p)
+        saved["top_users"] = MetadataValue.path(p)
+
+    # Résumé dans les métadonnées Dagster (tu peux cliquer les paths dans Dagit)
+    return MaterializeResult(
+        metadata={
+            "output_dir": MetadataValue.path(REPORT_DIR),
+            **saved
+        }
+    )
